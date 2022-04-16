@@ -1,5 +1,6 @@
 CuteJson/.vs/
-CuteJson/out/
+CuteJson/x64/
+CuteJson/CuteJson/x64/
 
 # Prerequisites
 *.d
