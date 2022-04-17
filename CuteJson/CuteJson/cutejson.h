@@ -16,6 +16,8 @@
 #define CUTE_PARSE_STACK_INIT_SIZE 256
 #endif
 
+#define STRING_ERROR(ret) do { c->top = head; return ret; } while(0)
+
 typedef enum {
 	CUTE_NULL,
 	CUTE_FALSE,
@@ -48,6 +50,8 @@ enum {
 	CUTE_PARSE_MISS_QUOTATION_MARK,
 	CUTE_PARSE_INVALID_STRING_CHAR,
 	CUTE_PARSE_INVALID_STRING_ESCAPE,
+	CUTE_PARSE_INVALID_UNICODE_SURROGATE,
+	CUTE_PARSE_INVALID_UNICODE_HEX,
 	CUTE_PARSE_ROOT_NOT_STNGULAR
 };
 
@@ -214,8 +218,50 @@ static int cute_parse_literal(cute_context* c, cute_value* v, const char* litera
 //------parse string------
 #define PUTC(c, ch) do { *(char*)cute_context_push(c, sizeof(char)) = (ch); } while(0)
 
+static const char* cute_parse_hex4(const char* p, unsigned int* u)
+{
+	int i;
+	*u = 0;
+	for (i = 0; i < 4; ++i)
+	{
+		char ch = *p++;
+		*u <<= 4;
+		if (ch >= '0' && ch <= '9') *u |= ch - '0';
+		else if (ch >= 'A' && ch <= 'F') *u |= ch - ('A' - 10);
+		else if (ch >= 'a' && ch <= 'f') *u |= ch - ('a' - 10);
+		else return NULL;
+	}
+	return p;
+}
+
+void cute_encode_utf8(cute_context* c, unsigned int u)
+{
+	if (u <= 0x7F)
+		PUTC(c, u & 0xFF);
+	else if (u <= 0x7FF) {
+		PUTC(c, 0xC0 | ((u >> 6) & 0xFF));
+		PUTC(c, 0x80 | (u & 0x3F));
+	}
+	else if (u <= 0xFFFF) {
+		PUTC(c, 0xE0 | ((u >> 12) & 0xFF));
+		PUTC(c, 0x80 | ((u >> 6) & 0x3F));
+		PUTC(c, 0x80 | (u & 0x3F));
+	}
+	else {
+		assert(u <= 0x10FFFF);
+		PUTC(c, 0xF0 | ((u >> 18) & 0xFF));
+		PUTC(c, 0x80 | ((u >> 12) & 0x3F));
+		PUTC(c, 0x80 | ((u >> 6) & 0x3F));
+		PUTC(c, 0x80 | (u & 0x3F));
+	}
+}
+
 static int cute_parse_string(cute_context* c, cute_value* v) {
-	size_t head = c->top, len;
+	size_t head = c->top;
+	size_t len;
+
+	unsigned u, u2;
+
 	const char* p;
 	EXPECT(c, '\"');
 	p = c->json;
@@ -232,13 +278,29 @@ static int cute_parse_string(cute_context* c, cute_value* v) {
 				case 'n':  PUTC(c, '\n'); break;
 				case 'r':  PUTC(c, '\r'); break;
 				case 't':  PUTC(c, '\t'); break;
+				case 'u':
+					if (!(p = cute_parse_hex4(p, &u)))
+						STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_HEX);
+					if (u >= 0xD800 && u <= 0xDBFF) {
+						if (*p++ != '\\')
+							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
+						if (*p++ != 'u')
+							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
+						if (!(p = cute_parse_hex4(p, &u2)))
+							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_HEX);
+						if (u2 < 0xDC00 || u2 > 0xDFFF)
+							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
+						u = (((u - 0xD800) << 10) | (u2 - 0xDC00)) + 0x10000;
+					}
+					cute_encode_utf8(c, u);
+					break;
 				default:
 				c->top = head;
 				return CUTE_PARSE_INVALID_STRING_ESCAPE;
 			}
 			break;
 		case '\"':
-			len = c->top = head;
+			len = c->top - head;
 			cute_set_string(v, (const char*)cute_context_pop(c, len), len);
 			c->json = p;//reset
 			return CUTE_PARSE_OK;

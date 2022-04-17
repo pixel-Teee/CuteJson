@@ -77,8 +77,9 @@ static void test_parse_number() {
 static void test_parse_string() {
 	cute_value v;
     v.type = CUTE_STRING;
-    EXPECT_EQ_INT(CUTE_PARSE_OK, cute_parse(&v, "\"te\\bst\""));
+    EXPECT_EQ_INT(CUTE_PARSE_OK, cute_parse(&v, "\"tes\uabcdt\""));
     EXPECT_EQ_INT(CUTE_STRING, cute_get_type(&v));
+    cute_free(&v);
 }
 
 static void test_access_string() {
@@ -117,6 +118,7 @@ int main()
 #ifdef _WINDOWS
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
+    //_CrtSetBreakAlloc(91);
     test_parse();
     printf("%d/%d (%3.2f%%) passed\n", test_pass, test_count, test_pass * 100.0 / test_count);
    
