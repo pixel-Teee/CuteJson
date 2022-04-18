@@ -1,6 +1,10 @@
 #pragma once
 
+#include <stdlib.h>
+#include <malloc.h>
+#include <memory.h>
 #include <assert.h>
+#include <cmath>
 
 //-----expect c's next character == ch
 #define EXPECT(c, ch) do{ assert(*c->json == (ch)); c->json++; } while(0)
@@ -16,6 +20,10 @@
 #define CUTE_PARSE_STACK_INIT_SIZE 256
 #endif
 
+#ifndef CUTE_PARSE_STRINGIFY_INIT_SIZE
+#define CUTE_PARSE_STRINGIFY_INIT_SIZE 256
+#endif
+
 #define STRING_ERROR(ret) do { c->top = head; return ret; } while(0)
 
 typedef enum {
@@ -28,13 +36,24 @@ typedef enum {
 	CUTE_OBJECT
 }cute_type;
 
-typedef struct {
+typedef struct cute_value cute_value;
+typedef struct cute_member cute_member;
+
+struct cute_value {
 	union {
+		struct { cute_member* m; size_t size; }o;//member
 		struct { char* s; size_t len; }s;//string
+		struct { cute_value* e;  size_t size; }a;//array
 		double n;//number
 	}u;
 	cute_type type;
-}cute_value;
+};
+
+struct cute_member {
+	char* k;
+	size_t klen;//member key string, key string length
+	cute_value v;//member value
+};
 
 typedef struct {
 	const char* json;
@@ -52,14 +71,52 @@ enum {
 	CUTE_PARSE_INVALID_STRING_ESCAPE,
 	CUTE_PARSE_INVALID_UNICODE_SURROGATE,
 	CUTE_PARSE_INVALID_UNICODE_HEX,
-	CUTE_PARSE_ROOT_NOT_STNGULAR
+	CUTE_PARSE_ROOT_NOT_STNGULAR,
+	CUTE_PARSE_MISS_COMMA_OR_SQUARE_BRACKET,
+	CUTE_PARSE_MISS_OK,
+	CUTE_PARSE_MISS_COLON,
+	CUTE_PARSE_MISS_COMMA_OR_CURLY_BRACKET,
+	CUTE_STRINGFY_OK,
+	CUTE_PARSE_MISS_KEY
 };
+
+//------access array------
+size_t cute_get_array_size(const cute_value* v) {
+	assert(v != NULL && v->type == CUTE_ARRAY);
+	return v->u.a.size;
+}
+
+cute_value* cute_get_array_element(const cute_value* v, size_t index) {
+	assert(v != NULL && v->type == CUTE_ARRAY);
+	assert(index < v->u.a.size);
+	return &v->u.a.e[index];
+}
+//------access array------
 
 //------free and alloc------
 void cute_free(cute_value* v) {
+	size_t i;
 	assert(v != NULL);
-	if (v->type == CUTE_STRING)
+	switch (v->type)
+	{
+	case CUTE_STRING:
 		free(v->u.s.s);
+		break;
+	case CUTE_ARRAY:
+		for (i = 0; i < v->u.a.size; ++i)
+			cute_free(&v->u.a.e[i]);
+		free(v->u.a.e);
+		break;
+	case CUTE_OBJECT:
+		for (i = 0; i < v->u.o.size; ++i) {
+			free(v->u.o.m[i].k);
+			cute_free(&v->u.o.m[i].v);
+		}
+		free(v->u.o.m);
+		break;
+	default:
+		break;
+	}
 	v->type = CUTE_NULL;
 }
 //------free and alloc------
@@ -140,6 +197,52 @@ size_t cute_get_string_length(const cute_value* v) {
 	return v->u.s.len;
 }
 //------get set string------
+
+//------get set object------
+size_t cute_get_object_size(const cute_value* v) {
+	assert(v != NULL && v->u.o.m != NULL && v->type == CUTE_OBJECT);
+	return v->u.o.size;
+}
+const char* cute_get_object_key(const cute_value* v, size_t index)
+{
+	assert(v != NULL && v->u.o.m != NULL && v->type == CUTE_OBJECT);
+	assert(v->u.o.size <= index);
+	const char* s;
+
+	cute_member* member = v->u.o.m;
+	for (size_t i = 0; i < v->u.o.size; ++i)
+	{
+		++member;
+	}
+	return member->k;
+}
+size_t cute_get_object_key_length(const cute_value* v, size_t index)
+{
+	assert(v != NULL && v->u.o.m != NULL && v->type == CUTE_OBJECT);
+	assert(v->u.o.size <= index);
+	const char* s;
+
+	cute_member* member = v->u.o.m;
+	for (size_t i = 0; i < v->u.o.size; ++i)
+	{
+		++member;
+	}
+	return member->klen;
+}
+cute_value* cute_get_object_value(const cute_value* v, size_t index)
+{
+	assert(v != NULL && v->u.o.m != NULL && v->type == CUTE_OBJECT);
+	assert(v->u.o.size <= index);
+	const char* s;
+
+	cute_member* member = v->u.o.m;
+	for (size_t i = 0; i < v->u.o.size; ++i)
+	{
+		++member;
+	}
+	return &(member->v);
+}
+//------get set object------
 
 //------parse value------
 static int cute_parse_null(cute_context* c, cute_value* v) {
@@ -256,9 +359,9 @@ void cute_encode_utf8(cute_context* c, unsigned int u)
 	}
 }
 
-static int cute_parse_string(cute_context* c, cute_value* v) {
+static int cute_parse_string_raw(cute_context* c, char** str, size_t* len) {
 	size_t head = c->top;
-	size_t len;
+	//size_t len;
 
 	unsigned u, u2;
 
@@ -270,40 +373,42 @@ static int cute_parse_string(cute_context* c, cute_value* v) {
 		switch (ch) {
 		case '\\':
 			switch (*p++) {
-				case '\"': PUTC(c, '\"'); break;
-				case '\\': PUTC(c, '\\'); break;
-				case '/':  PUTC(c, '/'); break;
-				case 'b':  PUTC(c, '\b'); break;
-				case 'f':  PUTC(c, '\f'); break;
-				case 'n':  PUTC(c, '\n'); break;
-				case 'r':  PUTC(c, '\r'); break;
-				case 't':  PUTC(c, '\t'); break;
-				case 'u':
-					if (!(p = cute_parse_hex4(p, &u)))
+			case '\"': PUTC(c, '\"'); break;
+			case '\\': PUTC(c, '\\'); break;
+			case '/':  PUTC(c, '/'); break;
+			case 'b':  PUTC(c, '\b'); break;
+			case 'f':  PUTC(c, '\f'); break;
+			case 'n':  PUTC(c, '\n'); break;
+			case 'r':  PUTC(c, '\r'); break;
+			case 't':  PUTC(c, '\t'); break;
+			case 'u':
+				if (!(p = cute_parse_hex4(p, &u)))
+					STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_HEX);
+				if (u >= 0xD800 && u <= 0xDBFF) {
+					if (*p++ != '\\')
+						STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
+					if (*p++ != 'u')
+						STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
+					if (!(p = cute_parse_hex4(p, &u2)))
 						STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_HEX);
-					if (u >= 0xD800 && u <= 0xDBFF) {
-						if (*p++ != '\\')
-							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
-						if (*p++ != 'u')
-							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
-						if (!(p = cute_parse_hex4(p, &u2)))
-							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_HEX);
-						if (u2 < 0xDC00 || u2 > 0xDFFF)
-							STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
-						u = (((u - 0xD800) << 10) | (u2 - 0xDC00)) + 0x10000;
-					}
-					cute_encode_utf8(c, u);
-					break;
-				default:
+					if (u2 < 0xDC00 || u2 > 0xDFFF)
+						STRING_ERROR(CUTE_PARSE_INVALID_UNICODE_SURROGATE);
+					u = (((u - 0xD800) << 10) | (u2 - 0xDC00)) + 0x10000;
+				}
+				cute_encode_utf8(c, u);
+				break;
+			default:
 				c->top = head;
 				return CUTE_PARSE_INVALID_STRING_ESCAPE;
 			}
 			break;
 		case '\"':
-			len = c->top - head;
-			cute_set_string(v, (const char*)cute_context_pop(c, len), len);
+		{
+			*len = c->top - head;
+			*str = (char*)cute_context_pop(c, *len);
 			c->json = p;//reset
 			return CUTE_PARSE_OK;
+		}
 		case '\0':
 			c->top = head;
 			return CUTE_PARSE_MISS_QUOTATION_MARK;
@@ -316,7 +421,24 @@ static int cute_parse_string(cute_context* c, cute_value* v) {
 		}
 	}
 }
+
+static int cute_parse_string(cute_context* c, cute_value* v) {
+	int ret;
+	char* s;
+	size_t len;
+	if ((ret = cute_parse_string_raw(c, &s, &len)) == CUTE_PARSE_OK)
+	{
+		cute_set_string(v, s, len);
+		//free(s);
+	}
+
+	return ret;
+}
 //------parse string------
+
+//------parse value------
+
+static int cute_parse_array(cute_context* c, cute_value* v);
 
 static int cute_parse_value(cute_context* c, cute_value* v) {
 	switch (*c->json) {
@@ -324,12 +446,139 @@ static int cute_parse_value(cute_context* c, cute_value* v) {
 		case 't': return cute_parse_true(c, v);
 		case 'f': return cute_parse_false(c, v);
 		case '\"': return cute_parse_string(c, v);
+		case '[': return cute_parse_array(c, v);
 		default:  return cute_parse_number(c, v);
 		case '\0': return CUTE_PARSE_EXPECT_VALUE;
 	}
 }
 
 //------parse value------
+
+//------parse array------
+/*
+	recursive-descent parsing
+*/
+static void cute_parse_whitespace(cute_context* c);
+static int cute_parse_array(cute_context* c, cute_value* v) {
+	size_t size = 0;
+	int ret = 0;
+	EXPECT(c, '[');
+	cute_parse_whitespace(c);
+	if (*c->json == ']') {
+		c->json++;
+		v->type = CUTE_ARRAY;
+		v->u.a.size = 0;
+		v->u.a.e = NULL;
+		return CUTE_PARSE_OK;
+	}
+	for (;;) {
+		cute_value e;
+		cute_init(&e);
+		if ((ret = cute_parse_value(c, &e)) != CUTE_PARSE_OK)
+			return ret;
+		cute_parse_whitespace(c);
+		memcpy(cute_context_push(c, sizeof(cute_value)), &e, sizeof(cute_value));
+		++size;
+		if (*c->json == ',')
+		{
+			c->json++;
+			cute_parse_whitespace(c);
+		}
+		else if (*c->json == ']') {
+			c->json++;
+			v->type = CUTE_ARRAY;
+			v->u.a.size = size;
+			size *= sizeof(cute_value);
+			memcpy(v->u.a.e = (cute_value*)malloc(size), cute_context_pop(c, size), size);
+			return CUTE_PARSE_OK;
+		}
+		else
+		{
+			ret = CUTE_PARSE_MISS_COMMA_OR_SQUARE_BRACKET;
+			break;
+		}
+	}
+	size_t i;
+	/* Pop and free values on the stack */
+	for (i = 0; i < size; ++i)
+		cute_free((cute_value*)cute_context_pop(c, sizeof(cute_value)));
+	return ret;
+}
+//------parse array------
+
+//------parse object------
+static int cute_parse_object(cute_context* c, cute_value* v) {
+	size_t size;
+	cute_member m;
+	int ret;
+	EXPECT(c, '{');
+	cute_parse_whitespace(c);
+	if (*c->json == '}') {
+		c->json++;
+		v->type = CUTE_OBJECT;
+		v->u.o.m = 0;
+		v->u.o.size = 0;
+		return CUTE_PARSE_OK;
+	}
+	m.k = NULL;
+	size = 0;
+	for (;;) {
+		char* str;
+		cute_init(&m.v);
+		/* 1. parse key */
+		if (*c->json != '"') {
+			ret = CUTE_PARSE_MISS_KEY;
+			break;
+		}
+		if ((ret = cute_parse_string_raw(c, &str, &m.klen)) != CUTE_PARSE_OK)
+			break;
+		memcpy(m.k = (char*)malloc(m.klen + 1), str, m.klen);
+		m.k[m.klen] = '\0';
+		/* 2. parse ws colon ws */
+		cute_parse_whitespace(c);
+		if (*c->json != ':') {
+			ret = CUTE_PARSE_MISS_COLON;
+			break;
+		}
+		c->json++;
+		cute_parse_whitespace(c);
+		/* 3. parse value */
+		if((ret = cute_parse_value(c, &m.v)) != CUTE_PARSE_OK)
+			break;
+		memcpy(cute_context_push(c, sizeof(cute_member)), &m, sizeof(cute_member));
+		++size;
+		m.k = NULL;/* parse successfully, set to null, ownership is transferred to member on stack */
+		cute_parse_whitespace(c);
+		if (*c->json == ',') {
+			c->json++;
+			cute_parse_whitespace(c);
+		}
+		else if (*c->json == '}') {
+			size_t s = sizeof(cute_member) * size;
+			c->json++;
+			v->type = CUTE_OBJECT;
+			v->u.o.size = size;
+			memcpy(v->u.o.m = (cute_member*)malloc(s), cute_context_pop(c, s), s);
+			return CUTE_PARSE_OK;
+		}
+		else {
+			ret = CUTE_PARSE_MISS_COMMA_OR_CURLY_BRACKET;
+			break;
+		}
+	}
+	/* 5. Pop and free members on the stack */
+	free(m.k);
+	size_t i;
+	for (i = 0; i < size; ++i)
+	{
+		cute_member* m = (cute_member*)cute_context_pop(c, sizeof(cute_member));
+		free(m->k);
+		cute_free(&m->v);
+	}
+
+	return ret;
+}
+//------parse object------
 
 static void cute_parse_whitespace(cute_context* c) {
 	const char* p = c->json;
@@ -361,3 +610,105 @@ int cute_parse(cute_value* v, const char* json) {
 	free(c.stack);//<-
 	return ret;
 }
+
+/*------Generator JSON Text------*/
+
+#define PUTS(c, s, len) memcpy(cute_context_push(c, len), s, len)
+
+static void cute_stringify_string(cute_context* c, const char* s, size_t len) {
+	size_t i;
+	assert(s != NULL);
+	PUTC(c, '"');
+	for (i = 0; i < len; ++i) {
+		unsigned char ch = (unsigned char)s[i];
+		switch (ch) {
+		case '\"': PUTS(c, "\\\"", 2); break;
+		case '\\': PUTS(c, "\\\\", 2); break;
+		case '\b': PUTS(c, "\\b", 2); break;
+		case '\f': PUTS(c, "\\f", 2); break;
+		case '\n': PUTS(c, "\\n", 2); break;
+		case '\r': PUTS(c, "\\r", 2); break;
+		case '\t': PUTS(c, "\\t", 2); break;
+		default:
+			if (ch < 0x20) {
+				char buffer[7];
+				sprintf(buffer, "\\u%04X", ch);
+				PUTS(c, buffer, 6);
+			}
+			else
+				PUTC(c, s[i]);
+		}
+	}
+	PUTC(c, '"');
+}
+
+static int cute_stringify_value(cute_context* c, const cute_value* v) {
+	size_t i;
+	int ret;
+	switch (v->type) {
+	case CUTE_NULL: PUTS(c, "null", 4); break;
+	case CUTE_FALSE: PUTS(c, "false", 5); break;
+	case CUTE_TRUE: PUTS(c, "true", 4); break;
+	case CUTE_NUMBER:
+	{
+		char buffer[32];
+		int length = sprintf(buffer, "%.17g", v->u.n);
+		PUTS(c, buffer, length);
+		break;
+	}
+	case CUTE_STRING:
+	{
+		cute_stringify_string(c, v->u.s.s, v->u.s.len);
+		break;
+	}
+	case CUTE_ARRAY:
+	{
+		PUTC(c, '[');
+		for (i = 0; i < v->u.a.size; ++i) {
+			if (i > 0)
+				PUTC(c, ',');
+			cute_stringify_value(c, &v->u.a.e[i]);
+		}
+		PUTC(c, ']');
+		break;
+	}
+	case CUTE_OBJECT:
+	{
+		PUTC(c, '{');
+
+		for (i = 0; i < v->u.o.size; ++i) {
+			if (i > 0)
+				PUTC(c, ',');
+			cute_stringify_string(c, v->u.o.m[i].k, v->u.o.m[i].klen);
+			PUTC(c, ':');
+			cute_stringify_value(c, &v->u.o.m[i].v);
+		}
+		PUTC(c, '}');
+		break;
+	}
+	return CUTE_STRINGFY_OK;
+	}
+}
+
+//v to temp context's stack, then output to json
+int cute_stringify(const cute_value* v, char** json, size_t* length)
+{
+	cute_context c;
+	int ret;
+	assert(v != NULL);
+	assert(json != NULL);
+	c.stack = (char*)malloc(c.size = CUTE_PARSE_STRINGIFY_INIT_SIZE);
+	c.top = 0;
+	if ((ret = cute_stringify_value(&c, v)) != CUTE_STRINGFY_OK) {
+		free(c.stack);
+		*json = NULL;
+		return ret;
+	}
+	if (length)
+		*length = c.top;
+	PUTC(&c, '\0');
+	*json = c.stack;
+	return CUTE_STRINGFY_OK;
+
+}
+/*------Generator JSON Text------*/

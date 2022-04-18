@@ -24,6 +24,13 @@ static int test_pass = 0;
 #define EXPECT_EQ_INT(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%d")
 #define EXPECT_TRUE(actual) EXPECT_EQ_BASE((1) == (actual), 1, actual, "%d")
 #define EXPECT_FALSE(actual) EXPECT_EQ_BASE((0) == (actual), 0, actual, "%d")
+#define EXPECT_EQ_DOUBLE(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%lf")
+
+#if defined(_MSC_VER)
+#define EXPECT_EQ_SIZE_T(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%Iu")
+#else
+#define EXPECT_EQ_SIZE_T(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%zu")
+#endif
 
 #define TEST_NUMBER(expect, json)\
     do{\
@@ -77,8 +84,41 @@ static void test_parse_number() {
 static void test_parse_string() {
 	cute_value v;
     v.type = CUTE_STRING;
-    EXPECT_EQ_INT(CUTE_PARSE_OK, cute_parse(&v, "\"tes\uabcdt\""));
+    EXPECT_EQ_INT(CUTE_PARSE_OK, cute_parse(&v, "\"tes\\u7321t\""));
     EXPECT_EQ_INT(CUTE_STRING, cute_get_type(&v));
+    cute_free(&v);
+}
+
+static void test_parse_array() {
+    size_t i, j;
+    cute_value v;
+
+    cute_init(&v);
+    EXPECT_EQ_INT(CUTE_PARSE_OK, cute_parse(&v, "[ null, false , true, 123, \"abc\" ]"));
+    EXPECT_EQ_INT(CUTE_ARRAY, cute_get_type(&v));
+    EXPECT_EQ_SIZE_T(5, cute_get_array_size(&v));
+    EXPECT_EQ_INT(CUTE_NULL, cute_get_type(cute_get_array_element(&v, 0)));
+    EXPECT_EQ_INT(CUTE_FALSE, cute_get_type(cute_get_array_element(&v, 1)));
+    EXPECT_EQ_INT(CUTE_TRUE, cute_get_type(cute_get_array_element(&v, 2)));
+    EXPECT_EQ_INT(CUTE_NUMBER, cute_get_type(cute_get_array_element(&v, 3)));
+    EXPECT_EQ_INT(CUTE_STRING, cute_get_type(cute_get_array_element(&v, 4)));
+    EXPECT_EQ_DOUBLE(123.0, cute_get_number(cute_get_array_element(&v, 3)));
+    cute_free(&v);
+
+    cute_init(&v);
+    EXPECT_EQ_INT(CUTE_PARSE_OK, cute_parse(&v, "[ [] , [0], [ 0, 1], [0, 1, 2] ]"));
+    EXPECT_EQ_INT(CUTE_ARRAY, cute_get_type(&v));
+    EXPECT_EQ_SIZE_T(4, cute_get_array_size(&v));
+    for (i = 0; i < 4; ++i) {
+        cute_value* a = cute_get_array_element(&v, i);
+        EXPECT_EQ_INT(CUTE_ARRAY, cute_get_type(&v));
+        EXPECT_EQ_SIZE_T(i, cute_get_array_size(a));
+        for (j = 0; j < i; ++j) {
+            cute_value* e = cute_get_array_element(a, j);
+            EXPECT_EQ_INT(CUTE_NUMBER, cute_get_type(e));
+            EXPECT_EQ_DOUBLE((double)j, cute_get_number(e));
+        }
+    }
     cute_free(&v);
 }
 
@@ -107,7 +147,7 @@ static void test_parse() {
     test_parse_false();
     test_parse_number();
     test_parse_string();
-
+    test_parse_array();
     //-----access------
     test_access_string();
     test_access_boolean();
