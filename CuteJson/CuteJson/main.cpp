@@ -22,9 +22,9 @@ static int test_pass = 0;
     } while(0)
 
 #define EXPECT_EQ_INT(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%d")
+#define EXPECT_EQ_DOUBLE(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%lf")
 #define EXPECT_TRUE(actual) EXPECT_EQ_BASE((1) == (actual), 1, actual, "%d")
 #define EXPECT_FALSE(actual) EXPECT_EQ_BASE((0) == (actual), 0, actual, "%d")
-#define EXPECT_EQ_DOUBLE(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%lf")
 
 #if defined(_MSC_VER)
 #define EXPECT_EQ_SIZE_T(expect, actual) EXPECT_EQ_BASE((expect) == (actual), expect, actual, "%Iu")
@@ -122,6 +122,7 @@ static void test_parse_array() {
     cute_free(&v);
 }
 
+//------access------
 static void test_access_string() {
     cute_value v;
     cute_init(&v);
@@ -140,6 +141,7 @@ static void test_access_boolean() {
     EXPECT_FALSE(cute_get_boolean(&v));
     cute_free(&v);
 }
+//------access------
 
 static void test_parse() {
     test_parse_null();
